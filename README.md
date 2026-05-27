@@ -4,13 +4,7 @@
 
 ### 演示截图
 
-#### 1. 系统主界面
-![ScholarMind 主界面](./docs/demo1.jpeg)
-*包含对话输入区、文件上传区和响应展示区*
-
-#### 2. 报告生成效果
-![ScholarMind 报告生成](./docs/demo2.jpeg)
-*深度研究报告示例，包含格式化文本、数学公式和图表*
+![ScholarMind 主界面](./docs/image.png)
 
 ---
 
