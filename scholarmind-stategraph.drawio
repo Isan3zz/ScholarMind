@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="drawio" version="26.0.0">
+  <diagram name="IRIS StateGraph">
+    <mxGraphModel dx="1400" dy="1100" grid="1" gridSize="10" pageWidth="1600" pageHeight="1200">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ===== Row 1: Router ===== -->
+        <mxCell id="router" value="Router&#xa;路由分发" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="640" y="40" width="120" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ===== Row 2: Planner + Refiner ===== -->
+        <mxCell id="planner" value="Planner&#xa;规划检索query" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="240" y="200" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="refiner" value="Refiner&#xa;编辑/增补报告" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="200" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ===== Row 3: Researcher ===== -->
+        <mxCell id="researcher" value="Researcher&#xa;本地向量检索&#xa;+ 网络搜索" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="240" y="360" width="140" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- ===== Row 4: Writer ===== -->
+        <mxCell id="writer" value="Writer&#xa;撰写完整报告" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="240" y="530" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ===== Row 5: Reviewer ===== -->
+        <mxCell id="reviewer" value="Reviewer&#xa;审查报告质量&#xa;PASS / FAIL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="400" y="680" width="140" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- ===== Row 6: Memory ===== -->
+        <mxCell id="memory" value="Memory&#xa;更新short_memory" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="640" y="840" width="130" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ===== Row 7: END ===== -->
+        <mxCell id="end" value="END" style="ellipse;whiteSpace=wrap;html=1;fillColor=#000000;strokeColor=#000000;fontColor=#ffffff;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="645" y="980" width="80" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- ===== 熔断提示 ===== -->
+        <mxCell id="stop_note" value="熔断: should_stop=True → END" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=10;fontColor=#b85450;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="490" y="445" width="200" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- ===== 路径图例 ===== -->
+        <mxCell id="legend_box" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#cccccc;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="440" width="260" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="legend_title" value="路径图例" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1090" y="445" width="80" height="20" as="geometry" />
+        </mxCell>
+        <!-- new_topic 绿色 -->
+        <mxCell id="legend_green_line" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#33a02c;strokeWidth=3;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1100" y="480" as="sourcePoint" />
+            <mxPoint x="1170" y="480" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend_green_text" value="new_topic (完整分析)" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="470" width="140" height="20" as="geometry" />
+        </mxCell>
+        <!-- edit_report 蓝色 -->
+        <mxCell id="legend_blue_line" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#1f78b4;strokeWidth=3;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1100" y="515" as="sourcePoint" />
+            <mxPoint x="1170" y="515" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend_blue_text" value="edit_report (只改表达)" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="505" width="140" height="20" as="geometry" />
+        </mxCell>
+        <!-- augment_report 橙色 -->
+        <mxCell id="legend_orange_line" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#ff7f00;strokeWidth=3;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1100" y="550" as="sourcePoint" />
+            <mxPoint x="1170" y="550" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend_orange_text" value="augment_report (补充证据)" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="540" width="150" height="20" as="geometry" />
+        </mxCell>
+        <!-- 虚线 = 条件边 -->
+        <mxCell id="legend_dash_line" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#666666;strokeWidth=1;dashed=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1100" y="585" as="sourcePoint" />
+            <mxPoint x="1170" y="585" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend_dash_text" value="虚线 = 条件边" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="575" width="100" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- ===== 边 (Edges) ===== -->
+
+        <!-- Router → Planner (new_topic / augment) -->
+        <mxCell id="e_router_planner" value="new_topic / augment_report" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.25;exitY=1;entryX=0.5;entryY=0;strokeColor=#33a02c;strokeWidth=2;fontSize=9;fontColor=#333333;" edge="1" parent="1" source="router" target="planner">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Router → Refiner (edit_report / refine) -->
+        <mxCell id="e_router_refiner" value="edit_report / refine" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;entryX=0.5;entryY=0;strokeColor=#1f78b4;strokeWidth=2;fontSize=9;fontColor=#333333;" edge="1" parent="1" source="router" target="refiner">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Planner → Researcher (固定边) -->
+        <mxCell id="e_planner_researcher" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;strokeColor=#33a02c;strokeWidth=2;" edge="1" parent="1" source="planner" target="researcher">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Researcher → Writer (new_topic) -->
+        <mxCell id="e_researcher_writer" value="new_topic" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;strokeColor=#33a02c;strokeWidth=2;fontSize=9;fontColor=#333333;" edge="1" parent="1" source="researcher" target="writer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Researcher → Refiner (augment) -->
+        <mxCell id="e_researcher_refiner" value="augment_report" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;strokeColor=#ff7f00;strokeWidth=2;fontSize=9;fontColor=#333333;" edge="1" parent="1" source="researcher" target="refiner">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="500" y="395" />
+              <mxPoint x="500" y="230" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Researcher → END (should_stop熔断) -->
+        <mxCell id="e_researcher_end" value="should_stop=True" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=0;entryX=0.5;entryY=0;strokeColor=#b85450;strokeWidth=2;fontSize=9;fontColor=#b85450;dashed=1;" edge="1" parent="1" source="researcher" target="end">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="345" y="300" />
+              <mxPoint x="685" y="300" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Writer → Reviewer (固定边) -->
+        <mxCell id="e_writer_reviewer" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;entryX=0.5;entryY=0;strokeColor=#33a02c;strokeWidth=2;" edge="1" parent="1" source="writer" target="reviewer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Refiner → Reviewer (augment) -->
+        <mxCell id="e_refiner_reviewer" value="augment_report" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=1;entryX=0.75;entryY=0;strokeColor=#ff7f00;strokeWidth=2;fontSize=9;fontColor=#333333;" edge="1" parent="1" source="refiner" target="reviewer">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1020" y="320" />
+              <mxPoint x="505" y="320" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Refiner → Memory (edit_report，跳过审查) -->
+        <mxCell id="e_refiner_memory" value="edit_report (跳过审查)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;entryX=1;entryY=0.5;strokeColor=#1f78b4;strokeWidth=2;fontSize=9;fontColor=#333333;" edge="1" parent="1" source="refiner" target="memory">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1090" y="870" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Reviewer → Memory (PASS) -->
+        <mxCell id="e_reviewer_memory" value="PASS" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;strokeColor=#33a02c;strokeWidth=2;fontSize=9;fontColor=#33a02c;fontStyle=1;" edge="1" parent="1" source="reviewer" target="memory">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Reviewer → Planner (FAIL 且 ≤3次) — 回退循环 -->
+        <mxCell id="e_reviewer_planner" value="FAIL (≤3次)&#xa;回 Planner 重检索" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;entryX=0.5;entryY=1;strokeColor=#b85450;strokeWidth=2;fontSize=9;fontColor=#b85450;dashed=1;" edge="1" parent="1" source="reviewer" target="planner">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="180" y="715" />
+              <mxPoint x="180" y="510" />
+              <mxPoint x="310" y="510" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Reviewer → END (≥3次达到上限) -->
+        <mxCell id="e_reviewer_end" value="≥3次 (上限)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;entryX=1;entryY=0.5;strokeColor=#b85450;strokeWidth=2;fontSize=9;fontColor=#b85450;dashed=1;" edge="1" parent="1" source="reviewer" target="end">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="760" y="715" />
+              <mxPoint x="760" y="1005" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Memory → END -->
+        <mxCell id="e_memory_end" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;strokeColor=#666666;strokeWidth=2;" edge="1" parent="1" source="memory" target="end">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- 循环标注 -->
+        <mxCell id="loop_label" value="⇄ 自校正循环 (最多3次)" style="text;html=1;strokeColor=#b85450;fillColor=#fff2cc;align=center;fontSize=10;fontColor=#b85450;fontStyle=2;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="100" y="745" width="120" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- 标题 -->
+        <mxCell id="title" value="ScholarMind Agent StateGraph 架构" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=16;fontStyle=1;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="500" y="-10" width="400" height="40" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,41 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+backend/venv/
+frontend/venv/
+
+# Local runtime data
+backend/app/api/*.db
+backend/app/rag/chroma_db/
+backend/app/rag/uploads/
+backend/traces/
+
+# Frontend
+node_modules/
+dist/
+frontend/node_modules/
+frontend/dist/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+
+# Agent skills (local)
+.reasonix/

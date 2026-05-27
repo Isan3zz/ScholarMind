@@ -1,0 +1,51 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.15
+    container_name: scholarmind-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    ports:
+      - "9200:9200"
+
+  grobid:
+    image: lfoppiano/grobid:0.8.0
+    container_name: scholarmind-grobid
+    ports:
+      - "8070:8070"
+
+  backend:
+    build:
+      context: ./backend
+    container_name: scholarmind-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      ES_URL: http://elasticsearch:9200
+      GROBID_URL: http://grobid:8070
+    ports:
+      - "8000:8000"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      grobid:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: scholarmind-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  scholarmind-es-data:
