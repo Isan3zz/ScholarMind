@@ -1,9 +1,11 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_core.documents import Document
 from langchain_core.tools import tool
 from app.tools.search import search_tavily
 from app.graph.state import AgentState
-from app.rag.engine import hybrid_search
+from app.rag.engine import apply_section_boost, children_only_search, global_parent_enrichment
 from app.utils.llm import get_llm
 
 llm = get_llm(model_type="smart")
@@ -17,55 +19,147 @@ Use when local documents lack sufficient evidence for the user's question."""
 
 
 def _format_evidence_docs(docs):
-    blocks = []
+    """格式化 evidence，按检索 query 分组展示。"""
+    # 按 retrieval_query 分组
+    groups: dict[str, list] = {}
     for doc in docs:
         meta = doc.metadata or {}
-        source = meta.get("source", "unknown")
-        section = meta.get("section", "Unknown")
-        score = meta.get("relevance_score", "")
-        score_text = f", score={score:.2f}" if isinstance(score, (int, float)) else ""
-        context = meta.get("parent_text") or doc.page_content
-        blocks.append(
-            f"[source: {source}, section: {section}{score_text}]\n{context}"
-        )
+        rq = meta.get("retrieval_query", "(原始问题)")
+        groups.setdefault(rq, []).append(doc)
+
+    blocks = []
+    for rq, group_docs in groups.items():
+        blocks.append(f"## 检索: {rq}")
+        for doc in group_docs:
+            meta = doc.metadata or {}
+            source = meta.get("source", "unknown")
+            section = meta.get("section", "Unknown")
+            score = meta.get("relevance_score", "")
+            score_text = f", score={score:.2f}" if isinstance(score, (int, float)) else ""
+            context = meta.get("parent_text") or doc.page_content
+            blocks.append(
+                f"[source: {source}, section: {section}{score_text}]\n{context}"
+            )
+        blocks.append("")
     return "\n\n".join(blocks)
 
 
-def _retrieve_local_docs(query: str) -> list[Document]:
+def _retrieve_local_docs(query: str, sources: list[str] | None = None, target_sections: list[str] | None = None) -> list[Document]:
+    """子块检索（不查父块），可选章节 boost。"""
+    hits = children_only_search(query, top_k=5, sources=sources)
+    if target_sections:
+        hits = apply_section_boost(hits, target_sections)
     docs: list[Document] = []
-    for hit in hybrid_search(query, top_k=5):
+    for hit in hits:
         metadata = hit.to_metadata()
         metadata["relevance_score"] = hit.score
-        docs.append(Document(page_content=hit.context_text, metadata=metadata))
+        docs.append(Document(page_content=hit.content, metadata=metadata))
     return docs
 
 
-def _build_local_retrieval_queries(query: str, plans: list[str]) -> list[str]:
-    queries: list[str] = []
+def _build_local_retrieval_queries(query: str, plans: list[str], *, skip_raw_query: bool = False) -> list[tuple[str, int]]:
+    """构建去重后的检索 query 列表，保留原始 plan 索引用于对齐 plan_sources。"""
+    queries: list[tuple[str, int]] = []
     seen: set[str] = set()
-    for candidate in [query, *(plans or [])]:
-        cleaned = str(candidate or "").strip()
+    # 原始 query，索引为 -1（无对应 plan_sources）
+    if not skip_raw_query:
+        cleaned = str(query or "").strip()
+        if cleaned:
+            key = cleaned.casefold()
+            if key not in seen:
+                seen.add(key)
+                queries.append((cleaned, -1))
+    for i, plan in enumerate(plans or []):
+        cleaned = str(plan or "").strip()
         key = cleaned.casefold()
         if cleaned and key not in seen:
             seen.add(key)
-            queries.append(cleaned)
+            queries.append((cleaned, i))
     return queries
 
 
-def _retrieve_local_docs_for_queries(query: str, plans: list[str]) -> list[Document]:
+def _retrieve_local_docs_for_queries(
+    query: str,
+    plans: list[str],
+    plan_sources: list[list[str]] | None = None,
+    plan_sections: list[list[str]] | None = None,
+) -> list[Document]:
+    # 有多论文路由时跳过原始 query（Planner 已按论文拆分了 query）
+    has_routing = any(srcs for srcs in (plan_sources or []))
+    retrieval_queries = _build_local_retrieval_queries(query, plans, skip_raw_query=has_routing)
+
+    # 构建 (retrieval_query, sources, sections) 任务列表
+    tasks: list[tuple[str, list[str] | None, list[str] | None]] = []
+    for rq, plan_idx in retrieval_queries:
+        srcs: list[str] | None = None
+        secs: list[str] | None = None
+        if plan_idx >= 0:
+            if plan_sources and plan_idx < len(plan_sources) and plan_sources[plan_idx]:
+                srcs = plan_sources[plan_idx]
+            if plan_sections and plan_idx < len(plan_sections) and plan_sections[plan_idx]:
+                secs = plan_sections[plan_idx]
+        tasks.append((rq, srcs, secs))
+
+    # 并行检索子块（不查父块）
+    child_docs: list[Document] = []
+    seen_chunks: set[str] = set()
+    with ThreadPoolExecutor(max_workers=min(len(tasks), 4)) as pool:
+        future_map = {
+            pool.submit(_retrieve_local_docs, rq, sources=srcs, target_sections=secs): (rq, srcs)
+            for rq, srcs, secs in tasks
+        }
+        for future in as_completed(future_map):
+            rq, _ = future_map[future]
+            for doc in future.result():
+                meta = doc.metadata or {}
+                identity = str(
+                    meta.get("chunk_id")
+                    or f"{meta.get('source')}:{meta.get('page')}:{meta.get('section')}:{doc.page_content}"
+                )
+                if identity in seen_chunks:
+                    continue
+                seen_chunks.add(identity)
+                meta["retrieval_query"] = rq
+                child_docs.append(doc)
+
+    # 全局父块补充 + 去重 + 相邻合并
+    from app.rag.hits import RetrievalHit
+
+    # 建立 chunk_id → retrieval_query 的映射（用于合并后恢复）
+    chunk_to_queries: dict[str, set[str]] = {}
+    for doc in child_docs:
+        cid = doc.metadata.get("chunk_id", "")
+        rq = doc.metadata.get("retrieval_query", "")
+        if cid:
+            chunk_to_queries.setdefault(cid, set()).add(rq)
+
+    child_hits = [
+        RetrievalHit(
+            chunk_id=doc.metadata.get("chunk_id", ""),
+            content=doc.page_content,
+            source=str(doc.metadata.get("source", "unknown")),
+            page=doc.metadata.get("page", "?"),
+            section=str(doc.metadata.get("section", "Unknown")),
+            score=float(doc.metadata.get("relevance_score", 0.0)),
+            retriever="rerank",
+            metadata=dict(doc.metadata),
+        )
+        for doc in child_docs
+    ]
+    enriched_hits = global_parent_enrichment(child_hits, top_k=max(5, len(child_hits)))
+
+    # 转换回 Document，恢复 retrieval_query
     docs: list[Document] = []
-    seen: set[str] = set()
-    for retrieval_query in _build_local_retrieval_queries(query, plans):
-        for doc in _retrieve_local_docs(retrieval_query):
-            meta = doc.metadata or {}
-            identity = str(
-                meta.get("chunk_id")
-                or f"{meta.get('source')}:{meta.get('page')}:{meta.get('section')}:{doc.page_content}"
-            )
-            if identity in seen:
-                continue
-            seen.add(identity)
-            docs.append(doc)
+    for hit in enriched_hits:
+        meta = hit.to_metadata()
+        meta["relevance_score"] = hit.score
+        # 从原始子块映射恢复 retrieval_query
+        cid = hit.metadata.get("chunk_id", "")
+        parent_id = hit.metadata.get("parent_chunk_id", "")
+        queries = chunk_to_queries.get(cid, set()) | chunk_to_queries.get(parent_id, set())
+        meta["retrieval_query"] = "; ".join(sorted(queries)) if queries else "(original)"
+        docs.append(Document(page_content=hit.context_text, metadata=meta))
+
     return docs
 
 
@@ -74,6 +168,8 @@ def research_node(state: AgentState):
     mode = state.get("search_mode", "hybrid")
     query = state["query"]
     plans = state["plan"]
+    plan_sources = state.get("plan_sources", [])
+    plan_sections = state.get("plan_sections", [])
     results = []
 
     print(f"--- [Researcher] Starting | mode={mode} ---")
@@ -81,7 +177,7 @@ def research_node(state: AgentState):
     # Step 1: Always search local docs first (code-driven, unchanged)
     local_content = ""
     try:
-        docs = _retrieve_local_docs_for_queries(query, plans)
+        docs = _retrieve_local_docs_for_queries(query, plans, plan_sources=plan_sources, plan_sections=plan_sections)
         if docs:
             local_content = _format_evidence_docs(docs)
             results.append(f"### 📂 本地文档资料\n{local_content}\n")

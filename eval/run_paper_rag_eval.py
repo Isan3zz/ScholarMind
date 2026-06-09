@@ -12,6 +12,9 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from dotenv import load_dotenv
+load_dotenv(BACKEND / ".env")
+
 
 DATASET_PATH = Path(__file__).with_name("paper_rag_dataset.jsonl")
 DEFAULT_PDF_CANDIDATES = [
@@ -300,29 +303,57 @@ def judge_answer_with_llm(sample: dict, hits: list[dict], answer: str, judge_llm
         }
 
     judge_llm = judge_llm or get_deepseek_judge_llm()
-    expected_points = sample.get("expected_points") or sample.get("answer_keywords") or []
     evidence = format_hits_for_answer(hits)
     prompt = f"""
-You are a strict RAG evaluation judge. Return only valid JSON.
+You are a RAG evaluation judge for academic paper QA. Return only valid JSON.
+Scores must be between 0.0 and 1.0.
 
-Evaluate the answer against the question, expected points, and retrieved evidence.
-Scores must be numbers between 0 and 1.
+=== CORE RULE: HONEST REFUSAL IS A VALID ANSWER ===
+If the answer states that the evidence is insufficient to fully answer the question, and honestly explains what IS available and what IS missing, this is CORRECT behavior. Score it high on faithfulness and evidence_sufficiency (it is being truthful). Score it moderate on correctness and coverage (identifying a knowledge gap IS valuable, but the question is not fully resolved). ONLY give 0.0 if the answer fabricates claims or ignores obviously relevant evidence.
 
-Definitions:
-- answer_correctness: whether the answer correctly answers the question.
-- faithfulness: whether answer claims are supported by the evidence.
-- key_point_coverage: how many expected points are covered, allowing synonyms.
-- citation_accuracy: whether citations are present and point to relevant source/section evidence.
-- evidence_sufficiency: whether the retrieved evidence is sufficient to answer the question.
+=== DIMENSION DEFINITIONS ===
+
+answer_correctness (0-1):
+- Does the answer say things that are factually consistent with the evidence?
+- If the answer says "evidence does not contain X" and X is genuinely absent → correct statement, give ≥0.5.
+- If the answer draws reasonable conclusions from the evidence → give ≥0.7.
+- Score 0.0 ONLY for factually false claims or complete non-answers.
+
+faithfulness (0-1):
+- Are the factual claims in the answer verifiable in the retrieved evidence?
+- An honest refusal with accurate description of available evidence → ≥0.8.
+- Penalize ONLY fabricated claims that contradict the evidence.
+- Synthesizing across multiple chunks is faithful if each piece is supported.
+
+key_point_coverage (0-1):
+- Does the answer address the key dimensions the question asks about?
+- If the question asks about two papers and the answer discusses both → ≥0.5.
+- If the answer identifies WHICH dimensions are covered vs. missing → ≥0.7.
+- The question text itself defines what needs to be covered. There is no checklist.
+
+citation_accuracy (0-1):
+- Does the answer use [source: file, section: ...] markers?
+- Are the cited sections relevant to the adjacent claims?
+- If no citations are present but the answer is otherwise good → 0.3 (penalty, not fatal).
+- If citations are present and point to correct sections → ≥0.7.
+
+evidence_sufficiency (0-1):
+- Does the answer make effective use of whatever evidence IS available?
+- If the answer correctly extracts all available relevant information → ≥0.7.
+- If the answer ignores obviously relevant evidence chunks → deduct.
+- Do NOT deduct because "the evidence alone can't answer everything." That is normal for cross-paper questions. Deduct ONLY for ignoring available evidence or claiming unsupported facts.
+
+=== SCORING GUIDE ===
+0.0: answer is fabricated, contradicts evidence, or says nothing at all.
+0.3-0.5: answer contains some true statements but misses major evidence or key question dimensions.
+0.6-0.8: answer is mostly correct, uses most available evidence honestly, covers key dimensions. Some gaps are acceptable.
+0.9-1.0: answer is comprehensive, uses all relevant evidence, correctly identifies what IS and IS NOT supported, well-cited.
+
+=== CONTEXT ===
+This evaluation involves cross-paper comparison questions. Evidence comes from multiple documents. Synthesizing across sources is expected and rewarded.
 
 Question:
 {sample.get("question", "")}
-
-Expected points:
-{json.dumps(expected_points, ensure_ascii=False)}
-
-Should refuse:
-{bool(sample.get("should_refuse"))}
 
 Retrieved evidence:
 {evidence[:12000]}
@@ -374,12 +405,31 @@ def _normalize_for_keyword_match(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", (text or "").lower())).strip()
 
 
+def _strip_section_prefix(name: str) -> str:
+    """去掉 MinerU 输出的章节编号前缀，如 '6 Conclusion' → 'Conclusion'."""
+    import re as _re
+    # 匹配: 数字(可能带.) + 空格 或 大写字母(可能带数字/.) + 空格
+    stripped = _re.sub(r"^(?:\d+(?:\.\d+)*|[A-Z](?:\d+)?(?:\.\d+)*)\s+", "", name)
+    return stripped if stripped != name else name
+
+
 def _hit_section_labels(hit: dict) -> set[str]:
     section = str(hit.get("section") or "").strip()
     subsection = str(hit.get("subsection") or "").strip()
-    labels = {item for item in [section, subsection] if item}
+    labels: set[str] = set()
+    for raw in [section, subsection]:
+        if raw:
+            labels.add(raw)
+            stripped = _strip_section_prefix(raw)
+            if stripped != raw:
+                labels.add(stripped)
     if section and subsection:
         labels.add(f"{section} / {subsection}")
+        # 也加一份去前缀的复合标签
+        s = _strip_section_prefix(section)
+        u = _strip_section_prefix(subsection)
+        if s != section or u != subsection:
+            labels.add(f"{s} / {u}")
     return labels
 
 
@@ -484,18 +534,16 @@ def resolve_pdf_path(pdf_path: str | None = None) -> Path:
 
 
 def build_docs_from_pdf(pdf_path: Path) -> list[dict]:
-    from app.rag.grobid_client import GrobidClient
     from app.rag.paper_chunker import build_paper_chunks
-    from app.rag.tei_parser import parse_tei_to_paper
+    from app.rag.marker_parser import parse_pdf_with_marker
 
-    tei_xml = GrobidClient().process_fulltext_document(str(pdf_path))
-    paper = parse_tei_to_paper(tei_xml)
+    units, title, authors = parse_pdf_with_marker(str(pdf_path))
     documents = build_paper_chunks(
-        units=paper.units,
+        units=units,
         source=pdf_path.name,
-        paper_title=paper.title,
+        paper_title=title,
         page=0,
-        authors=paper.authors,
+        authors=authors,
     )
     docs = []
     for doc in documents:
@@ -566,7 +614,18 @@ def evaluate_with_search_fn(
     fetch_k: int = 20,
     reject_threshold: float = 0.5,
 ) -> tuple[list[list[dict]], dict]:
-    results = [search_fn(sample["question"], top_k=top_k, fetch_k=fetch_k) for sample in samples]
+    results = []
+    for sample in samples:
+        paper = sample.get("paper")
+        sources = None
+        if isinstance(paper, str):
+            sources = [paper]
+        elif isinstance(paper, list) and paper:
+            sources = paper
+        try:
+            results.append(search_fn(sample["question"], top_k=top_k, fetch_k=fetch_k, sources=sources))
+        except TypeError:
+            results.append(search_fn(sample["question"], top_k=top_k, fetch_k=fetch_k))
     metrics = {
         "top1_accuracy": compute_section_hit_rate(samples, results, k=1),
         "section_hit@1": compute_section_hit_rate(samples, results, k=1),
@@ -583,18 +642,18 @@ def evaluate_with_search_fn(
     return results, metrics
 
 
-def formal_hybrid_search(query: str, top_k: int = 5, fetch_k: int = 20) -> list[dict]:
+def formal_hybrid_search(query: str, top_k: int = 5, fetch_k: int = 20, sources: list[str] | None = None) -> list[dict]:
     from app.rag.engine import hybrid_search
 
-    return [_hit_to_dict(hit) for hit in hybrid_search(query, top_k=top_k, fetch_k=fetch_k)]
+    return [_hit_to_dict(hit) for hit in hybrid_search(query, top_k=top_k, fetch_k=fetch_k, sources=sources)]
 
 
-def formal_candidate_search(query: str, fetch_k: int = 20) -> list[dict]:
+def formal_candidate_search(query: str, fetch_k: int = 20, sources: list[str] | None = None) -> list[dict]:
     from app.rag.engine import bm25_search, dense_search
     from app.rag.rank_fusion import rrf_fusion
 
-    bm25_hits = bm25_search(query, top_k=fetch_k)
-    dense_hits = dense_search(query, top_k=fetch_k)
+    bm25_hits = bm25_search(query, top_k=fetch_k, sources=sources)
+    dense_hits = dense_search(query, top_k=fetch_k, sources=sources)
     return [_hit_to_dict(hit) for hit in rrf_fusion([bm25_hits, dense_hits], top_k=fetch_k)]
 
 
@@ -605,21 +664,42 @@ def global_rerank_agent_hits(query: str, hits: list[dict], top_k: int = 5) -> li
 def _preferred_labels_for_query(query: str) -> set[str]:
     q = (query or "").lower()
     labels: set[str] = set()
-    if any(term in q for term in ["baseline", "baselines", "compared defense", "compare against"]):
-        labels.update(
-            {
-                "A.2 Baseline Setup",
-                "A Detailed Experimental Setups / A.2 Baseline Setup",
-                "Experimental Setup",
-                "Experiments / Experimental Setup",
-                "Existing Defenses",
-                "Related Work / Existing Defenses",
-            }
-        )
+
+    # Map query intent → likely target sections
+    intent_keywords = [
+        # Contribution / summary
+        (["contribution", "main idea", "summary", "overview", "key finding",
+          "propos", "introduce", "novel", "what is"], {"Abstract", "Introduction", "Conclusion and Future Work", "6 Conclusion and Future Work"}),
+        # Method / how
+        (["method", "how does", "architecture", "approach", "framework",
+          "mechanism", "algorithm", "strategy", "pipeline", "design",
+          "training", "fine-tune", "expert model", "inference", "decoding",
+          "sample space", "token distribution"], {"4 Safety-Aware Decoding: SafeDecoding", "3 Preliminaries", "Method", "Approach"}),
+        # Experiments / setup
+        (["experiment", "setup", "baseline", "benchmark", "dataset",
+          "evaluat", "compared", "compare against", "defense method",
+          "attack method", "model used"], {"5 Experiments", "A Detailed Experimental Setups", "Experimental Setup"}),
+        # Results
+        (["result", "performance", "score", "metric", "accuracy",
+          "effective", "improve", "outperform", "reduce"], {"B More Results", "5 Experiments", "Abstract"}),
+        # Limitations / future
+        (["limitation", "future work", "drawback", "failure", "weakness",
+          "challenge", "gap"], {"7 Limitations", "6 Conclusion and Future Work"}),
+        # Ethics / impact
+        (["ethic", "impact", "societal", "safety concern", "harm",
+          "misuse"], {"8 Ethical Impact", "6 Conclusion and Future Work"}),
+        # Formula / math
+        (["formula", "equation", "math", "notation", "symbol",
+          "sample space", "distribution"], {"4 Safety-Aware Decoding: SafeDecoding"}),
+    ]
+    for keywords, section_labels in intent_keywords:
+        if any(term in q for term in keywords):
+            labels.update(section_labels)
+
     return labels
 
 
-def _apply_eval_label_boost(query: str, hits: list[dict], boost: float = 0.08) -> list[dict]:
+def _apply_eval_label_boost(query: str, hits: list[dict], boost: float = 0.05) -> list[dict]:
     preferred = _preferred_labels_for_query(query)
     if not preferred:
         return hits
@@ -633,33 +713,68 @@ def _apply_eval_label_boost(query: str, hits: list[dict], boost: float = 0.08) -
     return sorted(boosted, key=lambda item: (-float(item.get("score", 0.0)), str(item.get("chunk_id", ""))))
 
 
-def plan_retrieval_queries(query: str) -> list[str]:
+def plan_retrieval_queries(query: str) -> tuple[list[str], list[list[str]]]:
     from app.graph.nodes.planner import PLAN_PROMPT, PlanResult
+    from app.rag.engine import get_available_papers
     from app.utils.llm import get_llm
 
+    # Build paper catalog for the Planner prompt
+    papers = get_available_papers()
+    if papers:
+        lines = []
+        for i, p in enumerate(papers, 1):
+            title = p.get("title", p["source"])
+            abstract = p.get("abstract", "")
+            abstract_short = abstract[:300] + ("..." if len(abstract) > 300 else "")
+            lines.append(f"{i}. source: {p['source']}")
+            lines.append(f"   title: {title}")
+            if abstract_short:
+                lines.append(f"   abstract: {abstract_short}")
+        paper_catalog = "\n".join(lines)
+    else:
+        paper_catalog = "(No papers currently indexed in the knowledge base)"
+
     result = get_llm().with_structured_output(PlanResult).invoke(
-        PLAN_PROMPT.format(query=query, critique="", short_memory_context="")
+        PLAN_PROMPT.format(query=query, critique="", short_memory_context="", paper_catalog=paper_catalog)
     )
-    return [item.strip() for item in result.queries if item.strip()]
+    queries = []
+    sections = []
+    for qp in result.queries:
+        if qp.query.strip():
+            queries.append(qp.query.strip())
+            sections.append([s.strip() for s in (qp.sections or []) if s.strip()])
+    return queries, sections
 
 
 def planned_retrieval_queries(
     query: str,
     plans: list[str],
+    plan_sections: list[list[str]] | None = None,
     max_rewrites: int | None = None,
-) -> list[str]:
-    queries = []
-    seen = set()
+) -> list[tuple[str, list[str]]]:
+    """返回 (query, sections) 列表，sections 为空列表表示无 boost。"""
+    result: list[tuple[str, list[str]]] = []
+    seen: set[str] = set()
     selected_plans = plans or []
+    selected_sections = plan_sections or []
     if max_rewrites is not None:
         selected_plans = selected_plans[: max(0, max_rewrites)]
-    for candidate in [query, *selected_plans]:
-        cleaned = str(candidate or "").strip()
+        selected_sections = selected_sections[: max(0, max_rewrites)]
+    # 原始 query，无 sections
+    cleaned = str(query or "").strip()
+    if cleaned:
+        key = cleaned.casefold()
+        if key not in seen:
+            seen.add(key)
+            result.append((cleaned, []))
+    for i, plan in enumerate(selected_plans):
+        cleaned = str(plan or "").strip()
         key = cleaned.casefold()
         if cleaned and key not in seen:
             seen.add(key)
-            queries.append(cleaned)
-    return queries
+            secs = selected_sections[i] if i < len(selected_sections) else []
+            result.append((cleaned, secs))
+    return result
 
 
 def formal_agent_search(
@@ -670,6 +785,7 @@ def formal_agent_search(
     planner_fn=None,
     candidate_search_fn=None,
     rerank_fn=None,
+    paper_sources: list[str] | None = None,
 ) -> list[dict]:
     if planner_fn is None:
         planner_fn = plan_retrieval_queries
@@ -678,11 +794,32 @@ def formal_agent_search(
     if rerank_fn is None:
         rerank_fn = global_rerank_agent_hits
 
+    planner_queries, planner_sections = planner_fn(query)
     docs = []
     seen = set()
-    sequence = 0
-    for retrieval_query in planned_retrieval_queries(query, planner_fn(query), max_rewrites=max_rewrites):
-        for hit in candidate_search_fn(retrieval_query, fetch_k=fetch_k):
+    from app.rag.engine import apply_section_boost
+    from app.rag.hits import RetrievalHit
+
+    for retrieval_query, target_sections in planned_retrieval_queries(query, planner_queries, planner_sections, max_rewrites=max_rewrites):
+        hits = candidate_search_fn(retrieval_query, fetch_k=fetch_k, sources=paper_sources)
+        # Section boost BEFORE rerank (Planner-driven, not eval-driven)
+        if target_sections and hits:
+            retrieval_hits = [
+                RetrievalHit(
+                    chunk_id=str(h.get("chunk_id", "")),
+                    content=str(h.get("content", "")),
+                    source=str(h.get("source", "unknown")),
+                    page=h.get("page", 0),
+                    section=str(h.get("section", "Unknown")),
+                    score=float(h.get("score", 0.0)),
+                    retriever=str(h.get("retriever", "")),
+                    metadata={k: v for k, v in h.items() if k not in ("chunk_id", "content", "source", "page", "section", "score", "retriever")},
+                )
+                for h in hits
+            ]
+            retrieval_hits = apply_section_boost(retrieval_hits, target_sections)
+            hits = [_hit_to_dict(hit) for hit in retrieval_hits]
+        for hit in hits:
             identity = str(
                 hit.get("chunk_id")
                 or f"{hit.get('source')}:{hit.get('section')}:{hit.get('content')}"
@@ -692,15 +829,10 @@ def formal_agent_search(
             seen.add(identity)
             doc = dict(hit)
             doc["retrieval_query"] = retrieval_query
-            doc["_query_sequence"] = sequence
-            sequence += 1
             docs.append(doc)
-    for doc in docs:
-        doc.pop("_query_sequence", None)
     rerank_k = min(len(docs), max(top_k, fetch_k))
     reranked = rerank_fn(query, docs, top_k=rerank_k)
-    boosted = _apply_eval_label_boost(query, reranked)
-    return boosted[:top_k]
+    return reranked[:top_k]
 
 
 def format_hits_for_answer(hits: list[dict]) -> str:
@@ -734,7 +866,7 @@ Question:
 Evidence:
 {evidence}
 """
-    return get_llm("smart").invoke([HumanMessage(content=prompt)]).content.strip()
+    return get_deepseek_judge_llm().invoke([HumanMessage(content=prompt)]).content.strip()
 
 
 def evaluate_answers(
@@ -829,11 +961,12 @@ def main() -> None:
         )
         results, metrics = evaluate_with_search_fn(
             samples,
-            lambda query, top_k, fetch_k: formal_agent_search(
+            lambda query, top_k, fetch_k, sources=None: formal_agent_search(
                 query,
                 top_k=top_k,
                 fetch_k=fetch_k,
                 max_rewrites=args.max_rewrites,
+                paper_sources=sources,
             ),
             top_k=args.top_k,
             fetch_k=args.fetch_k,

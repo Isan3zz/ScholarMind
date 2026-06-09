@@ -15,6 +15,8 @@ class AgentState(TypedDict):
 
     query: str
     plan: List[str]
+    plan_sources: NotRequired[List[List[str]]]  # per-query paper source lists, aligned with plan
+    plan_sections: NotRequired[List[List[str]]]  # per-query target section lists, aligned with plan
     search_results: List[str]
     final_report: str
     critique: str

@@ -13,11 +13,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 import httpx
-from app.rag.grobid_client import GrobidClient
 from app.rag.hits import RetrievalHit
-from app.rag.rank_fusion import apply_section_boost, rrf_fusion
-from app.rag.retrieval import infer_paper_intent, sections_for_intent
-from app.rag.tei_parser import parse_tei_to_paper
+from app.rag.rank_fusion import rrf_fusion
+
 
 ES_URL = os.getenv("ES_URL", "http://localhost:9200")
 ES_INDEX = os.getenv("ES_INDEX", "scholarmind_knowledge_base")
@@ -351,35 +349,44 @@ def _build_paper_documents_from_pages(pages: list[tuple[str, int]], source: str)
     return all_docs
 
 
-def _build_paper_documents_from_grobid(file_path: str, source: str) -> list[Document]:
-    from app.rag.paper_chunker import build_paper_chunks
 
-    tei_xml = GrobidClient().process_fulltext_document(file_path)
-    paper = parse_tei_to_paper(tei_xml)
+def _build_paper_documents_from_mineru(file_path: str, source: str) -> list[Document]:
+    """用 MinerU Cloud API 解析 PDF，转换为 LangChain Document 列表。"""
+    from app.rag.paper_chunker import build_paper_chunks
+    from app.rag.mineru_cloud_parser import parse_pdf_with_mineru
+
+    units, title, authors = parse_pdf_with_mineru(file_path)
     return build_paper_chunks(
-        units=paper.units,
+        units=units,
         source=source,
-        paper_title=paper.title,
+        paper_title=title,
         page=0,
-        authors=paper.authors,
+        authors=authors,
     )
 
 
 def _process_single_file(file_path: str) -> list[Document]:
-    """处理单个文件：GROBID 优先，失败回退 PyPDFLoader。"""
+    """处理单个文件：MinerU Cloud 优先，失败回退 PyPDFLoader。"""
     source = os.path.basename(file_path)
+
+    # 1) 优先尝试 MinerU Cloud
     try:
-        splits = _build_paper_documents_from_grobid(file_path, source=source)
-        parser_name = "GROBID TEI"
-    except Exception as grobid_error:
-        print(f"  [{source}] GROBID 失败，回退 PyPDFLoader: {grobid_error}")
-        loader = PyPDFLoader(file_path)
-        docs = loader.load()
-        pages = [(doc.page_content, int(doc.metadata.get("page", 0)) + 1) for doc in docs]
-        splits = _build_paper_documents_from_pages(pages, source=source)
-        parser_name = "PyPDFLoader"
+        splits = _build_paper_documents_from_mineru(file_path, source=source)
+        total = len(splits)
+        print(f"  [MinerU] {source} -> {total} 个块 (子块+父块)")
+        return splits
+    except Exception as mineru_error:
+        import traceback
+        print(f"  [{source}] MinerU 失败，回退 PyPDFLoader: {mineru_error}")
+        traceback.print_exc()
+
+    # 2) 回退 PyPDFLoader
+    loader = PyPDFLoader(file_path)
+    docs = loader.load()
+    pages = [(doc.page_content, int(doc.metadata.get("page", 0)) + 1) for doc in docs]
+    splits = _build_paper_documents_from_pages(pages, source=source)
     total = len(splits)
-    print(f"  [{parser_name}] {source} -> {total} 个块 (子块+父块)")
+    print(f"  [PyPDFLoader] {source} -> {total} 个块 (子块+父块)")
     return splits
 
 
@@ -513,7 +520,21 @@ def _es_hit_to_retrieval_hit(raw_hit: dict, retriever: str) -> RetrievalHit:
     )
 
 
-def bm25_search(query: str, top_k: int = 30) -> list[RetrievalHit]:
+def _source_filter(sources: str | list[str] | None) -> dict:
+    """构造 ES source 过滤条件。
+
+    None / [] → 不做过滤
+    str → 单论文 term filter
+    list[str] → 多论文 terms filter（限在这几篇里搜）
+    """
+    if not sources:  # None 和 [] 都走 match_all
+        return {"match_all": {}}
+    if isinstance(sources, str):
+        return {"term": {"metadata.source.keyword": sources}}
+    return {"terms": {"metadata.source.keyword": sources}}
+
+
+def bm25_search(query: str, top_k: int = 30, sources: str | list[str] | None = None, *, skip_enrichment: bool = False) -> list[RetrievalHit]:
     es = get_es_client()
     if not es.indices.exists(index=ES_INDEX):
         return []
@@ -523,16 +544,18 @@ def bm25_search(query: str, top_k: int = 30) -> list[RetrievalHit]:
         query={
             "bool": {
                 "must": [{"match": {"text": query}}],
-                "filter": [_child_chunk_filter()],
+                "filter": [_child_chunk_filter(), _source_filter(sources)],
             }
         },
         size=top_k,
     )
     hits = [_es_hit_to_retrieval_hit(item, retriever="bm25") for item in response["hits"]["hits"]]
+    if skip_enrichment:
+        return hits
     return _enrich_hits_with_parents(hits)
 
 
-def dense_search(query: str, top_k: int = 30) -> list[RetrievalHit]:
+def dense_search(query: str, top_k: int = 30, sources: str | list[str] | None = None, *, skip_enrichment: bool = False) -> list[RetrievalHit]:
     es = get_es_client()
     if not es.indices.exists(index=ES_INDEX):
         return []
@@ -541,7 +564,11 @@ def dense_search(query: str, top_k: int = 30) -> list[RetrievalHit]:
         index=ES_INDEX,
         query={
             "script_score": {
-                "query": _child_chunk_filter(),
+                "query": {
+                    "bool": {
+                        "filter": [_child_chunk_filter(), _source_filter(sources)],
+                    }
+                },
                 "script": {
                     "source": "cosineSimilarity(params.query_vector, 'vector') + 1.0",
                     "params": {"query_vector": query_vector},
@@ -551,6 +578,8 @@ def dense_search(query: str, top_k: int = 30) -> list[RetrievalHit]:
         size=top_k,
     )
     hits = [_es_hit_to_retrieval_hit(item, retriever="dense") for item in response["hits"]["hits"]]
+    if skip_enrichment:
+        return hits
     return _enrich_hits_with_parents(hits)
 
 
@@ -631,12 +660,231 @@ def _select_diverse_parent_contexts(
     return selected
 
 
-def hybrid_search(query: str, top_k: int = 5, fetch_k: int = 30) -> list[RetrievalHit]:
-    bm25_hits = bm25_search(query, top_k=fetch_k)
-    dense_hits = dense_search(query, top_k=fetch_k)
+def _search_pipeline_raw(query: str, top_k: int, fetch_k: int, sources: str | list[str] | None = None) -> list[RetrievalHit]:
+    """管线核心（不含最终去重）：BM25 + Dense → RRF → Rerank → 父块补充。"""
+    bm25_hits = bm25_search(query, top_k=fetch_k, sources=sources)
+    dense_hits = dense_search(query, top_k=fetch_k, sources=sources)
     fused = rrf_fusion([bm25_hits, dense_hits], top_k=fetch_k)
-    intent = infer_paper_intent(query)
-    reranked = rerank_hits(query, fused, top_k=top_k)
-    boosted = apply_section_boost(reranked, sections_for_intent(intent))
-    enriched = _enrich_hits_with_parents(boosted)
+    reranked = rerank_hits(query, fused, top_k=max(top_k * 3, fetch_k))
+    return _enrich_hits_with_parents(reranked)
+
+
+def _search_pipeline_children(query: str, top_k: int, fetch_k: int, sources: str | list[str] | None = None) -> list[RetrievalHit]:
+    """子块管线（不查父块）：BM25 + Dense → RRF → Rerank。"""
+    bm25_hits = bm25_search(query, top_k=fetch_k, sources=sources, skip_enrichment=True)
+    dense_hits = dense_search(query, top_k=fetch_k, sources=sources, skip_enrichment=True)
+    fused = rrf_fusion([bm25_hits, dense_hits], top_k=fetch_k)
+    return rerank_hits(query, fused, top_k=max(top_k * 3, fetch_k))
+
+
+def _search_pipeline(query: str, top_k: int, fetch_k: int, sources: str | list[str] | None = None) -> list[RetrievalHit]:
+    """完整管线：_search_pipeline_raw + 最终多样性去重。"""
+    enriched = _search_pipeline_raw(query, top_k=top_k, fetch_k=fetch_k, sources=sources)
     return _select_diverse_parent_contexts(enriched, top_k=top_k)
+
+
+def hybrid_search(
+    query: str,
+    top_k: int = 5,
+    fetch_k: int = 30,
+    sources: list[str] | None = None,
+) -> list[RetrievalHit]:
+    """混合检索。
+
+    sources=None  → 统一搜所有论文
+    sources=["a.pdf"] → 只搜这篇 (ES term filter)
+    sources=["a.pdf","b.pdf"] → 多篇论文限定范围 (ES terms filter)，单次管线统一搜
+    """
+    # 单论文 / 多论文 / 全量池：统一走 _search_pipeline，
+    # sources 作为 ES terms filter 限定论文范围，dense 检索在限定论文内做语义匹配
+    return _search_pipeline(query, top_k=top_k, fetch_k=fetch_k, sources=sources)
+
+
+def apply_section_boost(
+    hits: list[RetrievalHit],
+    target_sections: list[str],
+    boost: float = 0.05,
+) -> list[RetrievalHit]:
+    """对匹配目标章节的 chunk 做轻量加分，修正 reranker 对同论文内相似章节的区分不足。"""
+    if not target_sections or not hits:
+        return hits
+
+    target_lower = {s.strip().lower() for s in target_sections}
+    boosted = []
+    for hit in hits:
+        section = (hit.section or "").lower()
+        subsection = (hit.metadata.get("subsection") or "").lower()
+        matched = any(
+            t in section or t in subsection or section.startswith(t) or f"{section} / {subsection}".startswith(t)
+            for t in target_lower
+        )
+        if matched:
+            hit.score += boost
+        boosted.append(hit)
+
+    boosted.sort(key=lambda h: -h.score)
+    return boosted
+
+
+def children_only_search(
+    query: str,
+    top_k: int = 5,
+    fetch_k: int = 30,
+    sources: list[str] | None = None,
+) -> list[RetrievalHit]:
+    """子块检索（不查父块、不做去重）。
+
+    用于 Researcher 并行分发多条 query 后，在全局层统一做父块补充和去重。
+    """
+    return _search_pipeline_children(query, top_k=top_k, fetch_k=fetch_k, sources=sources)
+
+
+def global_parent_enrichment(
+    hits: list[RetrievalHit],
+    top_k: int = 5,
+    overlap_threshold: float = 0.75,
+    merge_overlap_min: float = 0.15,
+) -> list[RetrievalHit]:
+    """全局父块补充 + 去重 + 相邻父块合并。
+
+    1. 对所有子块统一查父块
+    2. 按 parent_chunk_id 去重
+    3. 同论文同 section 且内容有部分重叠的父块合并
+    4. 高重叠 (>overlap_threshold) 的跳过
+    5. 截断到 top_k
+    """
+    if not hits:
+        return []
+
+    # Step 1: 父块补充
+    enriched = _enrich_hits_with_parents(hits)
+
+    # Step 2: 去重 + 相邻合并
+    selected: list[RetrievalHit] = []
+    seen_parent_ids: set[str] = set()
+    selected_contexts: list[tuple[str, str]] = []  # (source, context)
+
+    for hit in enriched:
+        parent_id = str(hit.metadata.get("parent_chunk_id") or hit.chunk_id)
+        context = hit.context_text
+
+        # 相同 parent_id → 跳过
+        if parent_id in seen_parent_ids:
+            continue
+
+        # 同论文同 section 相邻父块 → 合并
+        merged = False
+        for i, (prev_source, prev_ctx) in enumerate(selected_contexts):
+            same_paper = hit.source == prev_source
+            same_section = hit.section == selected[i].section
+            overlap = _context_overlap(context, prev_ctx)
+            if same_paper and same_section and merge_overlap_min <= overlap < overlap_threshold:
+                merged_text = prev_ctx + "\n\n" + context
+                selected[i].metadata["parent_text"] = merged_text
+                selected_contexts[i] = (prev_source, merged_text)
+                seen_parent_ids.add(parent_id)
+                merged = True
+                break
+
+        if merged:
+            continue
+
+        # 高重叠 → 视为重复，跳过
+        if any(_context_overlap(context, existing) >= overlap_threshold for _, existing in selected_contexts):
+            continue
+
+        selected.append(hit)
+        seen_parent_ids.add(parent_id)
+        selected_contexts.append((hit.source, context))
+
+        if len(selected) >= top_k:
+            break
+
+    return selected
+
+
+def get_available_papers() -> list[dict]:
+    """返回当前 ES 索引中所有论文的元信息列表。
+
+    每项: {source, title, abstract}
+    - source: 论文文件名 (metadata.source)
+    - title: 论文标题 (from paper_metadata chunk)
+    - abstract: 摘要正文前 500 字符 (from section=Abstract body chunks)
+    """
+    es = get_es_client()
+    if not es.indices.exists(index=ES_INDEX):
+        return []
+
+    # 1. 用 terms aggregation 获取所有不重复论文 source
+    agg_resp = es.search(
+        index=ES_INDEX,
+        query={"match_all": {}},
+        aggs={
+            "paper_sources": {
+                "terms": {
+                    "field": "metadata.source.keyword",
+                    "size": 100,
+                }
+            }
+        },
+        size=0,
+    )
+
+    buckets = agg_resp.get("aggregations", {}).get("paper_sources", {}).get("buckets", [])
+
+    papers: list[dict] = []
+    for bucket in buckets:
+        source = bucket["key"]
+
+        # 2. 从 paper_metadata chunk 取标题
+        title_resp = es.search(
+            index=ES_INDEX,
+            query={
+                "bool": {
+                    "must": [
+                        {"term": {"metadata.source.keyword": source}},
+                        {"term": {"metadata.chunk_type.keyword": "paper_metadata"}},
+                    ]
+                }
+            },
+            size=1,
+        )
+        title = source  # fallback
+        hits = title_resp.get("hits", {}).get("hits", [])
+        if hits:
+            md = hits[0].get("_source", {}).get("metadata", {}) or {}
+            title = md.get("paper_title", source)
+
+        # 3. 从 section=Abstract 的 body chunk 取摘要
+        abstract_resp = es.search(
+            index=ES_INDEX,
+            query={
+                "bool": {
+                    "must": [
+                        {"term": {"metadata.source.keyword": source}},
+                        {"term": {"metadata.section.keyword": "Abstract"}},
+                    ],
+                    "must_not": [
+                        {"terms": {"metadata.chunk_type.keyword": ["parent", "paper_metadata"]}}
+                    ],
+                }
+            },
+            size=20,
+        )
+        abstract_parts = []
+        for hit in abstract_resp.get("hits", {}).get("hits", []):
+            text = hit.get("_source", {}).get("text", "")
+            if text:
+                # strip heading prefix like "[Paper Title | Abstract]"
+                if "] " in text:
+                    text = text.split("] ", 1)[-1]
+                abstract_parts.append(text)
+        abstract = " ".join(abstract_parts)[:500] if abstract_parts else ""
+
+        papers.append({
+            "source": source,
+            "title": title,
+            "abstract": abstract,
+        })
+
+    return papers
