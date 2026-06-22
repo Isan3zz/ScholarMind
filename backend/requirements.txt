@@ -1,6 +1,6 @@
 fastapi==0.129.0
 langchain_community==0.4.1
-langchain_core==1.2.12
+langchain_core>=1.2.18
 langchain_huggingface==1.2.0
 langchain_openai==1.1.9
 langchain_text_splitters==1.1.0
@@ -16,4 +16,5 @@ socksio>=1.0.0
 aiosqlite==0.22.1
 dashscope==1.25.18
 pypdf==6.11.0
+langchain-mineru>=0.1.0
 python-multipart==0.0.29

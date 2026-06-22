@@ -78,7 +78,7 @@ async def chat_endpoint(request: ChatRequest):
             mode=request.search_mode,
         )
 
-        print(f"🚀 新任务开启 | 模式: {request.search_mode} | 问题: {request.query}")
+        print(f"[Chat] mode={request.search_mode} query={request.query}")
 
         async with AsyncSqliteSaver.from_conn_string(DB_PATH) as memory:
             app = create_graph(memory=memory)
@@ -99,6 +99,14 @@ async def chat_endpoint(request: ChatRequest):
                     )
                     yield f"data: {data}\n\n"
                     await asyncio.sleep(0.1)
+
+            # Persist short_memory to checkpoint (post-processing, not a graph node)
+            final_state = await app.aget_state(config)
+            if final_state and final_state.values:
+                from app.graph.nodes.memory import update_short_memory
+
+                mem_update = update_short_memory(final_state.values)
+                await app.aupdate_state(config, mem_update)
 
         collector.finish_turn(turn)
         path = save_trace(collector)

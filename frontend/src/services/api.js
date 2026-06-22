@@ -1,6 +1,6 @@
 // frontend/src/services/api.js
 
-const API_BASE = "http://localhost:8000/api";
+const API_BASE = "http://localhost:8002/api";
 const SESSION_THREAD_ID_KEY = "scholarmind_session_thread_id";
 
 function generateUUID() {

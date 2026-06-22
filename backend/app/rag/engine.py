@@ -815,7 +815,7 @@ def get_available_papers() -> list[dict]:
     if not es.indices.exists(index=ES_INDEX):
         return []
 
-    # 1. 用 terms aggregation 获取所有不重复论文 source
+    # 1. 用 terms aggregation 获取所有不重复论文 source，嵌套 section 子聚合
     agg_resp = es.search(
         index=ES_INDEX,
         query={"match_all": {}},
@@ -824,7 +824,15 @@ def get_available_papers() -> list[dict]:
                 "terms": {
                     "field": "metadata.source.keyword",
                     "size": 100,
-                }
+                },
+                "aggs": {
+                    "sections": {
+                        "terms": {
+                            "field": "metadata.section.keyword",
+                            "size": 50,
+                        }
+                    }
+                },
             }
         },
         size=0,
@@ -835,6 +843,10 @@ def get_available_papers() -> list[dict]:
     papers: list[dict] = []
     for bucket in buckets:
         source = bucket["key"]
+
+        # 1a. 从子聚合提取该论文的所有章节名
+        section_buckets = bucket.get("sections", {}).get("buckets", [])
+        sections = sorted([sb["key"] for sb in section_buckets if sb.get("key")])
 
         # 2. 从 paper_metadata chunk 取标题
         title_resp = es.search(
@@ -885,6 +897,7 @@ def get_available_papers() -> list[dict]:
             "source": source,
             "title": title,
             "abstract": abstract,
+            "sections": sections,
         })
 
     return papers

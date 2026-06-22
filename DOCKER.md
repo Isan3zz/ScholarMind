@@ -2,10 +2,9 @@
 
 This project can run as a full Docker Compose stack:
 
-- `frontend`: Vue app served by nginx on `http://localhost:5173`
-- `backend`: FastAPI service on `http://localhost:8000`
+- `frontend`: Vue app served by nginx on `http://localhost:5175`
+- `backend`: FastAPI service on `http://localhost:8002`
 - `elasticsearch`: Elasticsearch, available inside Docker as `http://elasticsearch:9200`
-- `grobid`: GROBID PDF parser, available inside Docker as `http://grobid:8070`
 
 ## Start
 
@@ -18,7 +17,7 @@ docker compose up -d --build
 Open:
 
 ```text
-http://localhost:5173
+http://localhost:5175
 ```
 
 ## Stop
@@ -49,4 +48,4 @@ docker compose logs -f backend
 docker compose logs -f frontend
 ```
 
-Elasticsearch and GROBID are intentionally not published to host ports. This avoids conflicts when local `9200` or `8070` services are already running.
+Elasticsearch is intentionally not published to host ports. This avoids conflicts when a local `9200` service is already running.

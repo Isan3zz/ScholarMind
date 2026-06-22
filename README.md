@@ -1,6 +1,8 @@
 # 🎓 ScholarMind — 学术论文智能阅读助手
 
 > **ScholarMind** 是一个基于 **LangGraph 多节点状态机** 的学术论文深度阅读与报告生成系统。支持论文上传、结构化检索、自动撰写与自校正闭环。
+>
+> ⚠️ **ScholarMind 是单 Agent 系统**——整个 StateGraph 编译产物就是那唯一的 Agent。Router、Planner、Researcher 等是它内部的**工作流节点**，各有独立 prompt 和职责，但不是独立 Agent。
 
 ### 演示截图
 
@@ -10,9 +12,9 @@
 
 ## ✨ 核心特性
 
-### 🧠 Agentic 工作流 (LangGraph StateGraph)
+### 🧠 单 Agent · 多节点工作流 (LangGraph StateGraph)
 
-7 个异构节点协同，每个节点独立 prompt + 独立模型 + 独立职责：
+整个 StateGraph 是一个 Agent，内部 6 个 LLM 节点各司其职，共享 `AgentState` 状态，外加一个后处理步骤持久化会话记忆：
 
 | 节点 | 职责 | 模型 |
 |------|------|------|
@@ -22,14 +24,14 @@
 | **Writer** | 根据检索证据撰写完整报告 | fast |
 | **Reviewer** | 审查报告质量（规则+LLM），PASS/FAIL | smart (temp=0) |
 | **Refiner** | 在已有报告上编辑或增补 | fast |
-| **Memory** | 更新会话记忆 (topic/summary/change_log) | — |
+| *(后处理)* | 持久化 short_memory 到 checkpoint（不在 graph 拓扑中） | — |
 
 ### 🔀 三条交互路径
 
 ```
-new_topic:      router → planner → researcher → writer → reviewer ⇄ planner (≤3次) → memory → END
-edit_report:    router → refiner → memory → END
-augment_report: router → planner → researcher → refiner → reviewer ⇄ planner (≤3次) → memory → END
+new_topic:      router → planner → researcher → writer → reviewer ⇄ planner (≤3次) → END
+augment_report: router → planner → researcher → refiner → reviewer ⇄ planner (≤3次) → END
+edit_report:    router → refiner → END
 ```
 
 - **开始新分析**: 完整检索+撰写+审查，最多 3 轮自校正
@@ -45,7 +47,7 @@ BM25(30条) + Dense(30条) → RRF融合 → qwen3-rerank精排 → Section Boos
 
 - **子块索引 + 父块返回**: 检索打在段落级（精准），LLM 看到段落+邻居（完整上下文）
 - **Section Boost**: 根据问题类型（方法/实验/相关工作）给目标章节的 chunk 加分
-- **GROBID + TEI**: 优先解析论文结构（章节树、公式、作者），失败回退 PyPDFLoader + regex
+- **Marker**: 高精度 PDF 解析（布局检测 + OCR + 章节层级），失败回退 PyPDFLoader + regex
 
 ### 🛡️ 防幻觉机制
 
@@ -84,7 +86,7 @@ BM25(30条) + Dense(30条) → RRF融合 → qwen3-rerank精排 → Section Boos
                └────┬────┘            └────┬────┘
                     │                      │
                     ▼                      │ edit_report
-               ┌──────────┐                │ → memory → END
+               ┌──────────┐                │ → END
                │Researcher│                │
                └────┬─────┘                │
                     │                      │
@@ -115,12 +117,7 @@ BM25(30条) + Dense(30条) → RRF融合 → qwen3-rerank精排 → Section Boos
    →plan  │       END     │
    (≤3次) │               │
           ▼               ▼
-     ┌────────┐      ┌────────┐
-     │ Memory │      │ Memory │
-     └───┬────┘      └───┬────┘
-         │               │
-         ▼               ▼
-        END             END
+         END             END
 ```
 
 ---
@@ -133,7 +130,7 @@ BM25(30条) + Dense(30条) → RRF融合 → qwen3-rerank精排 → Section Boos
 - **检索引擎**: Elasticsearch (BM25 + 向量混合, RRF 融合)
 - **重排序**: qwen3-rerank (DashScope OpenAI 兼容接口)
 - **Embedding**: DashScope text-embedding-v4 / HuggingFace (可切换)
-- **PDF 解析**: GROBID 0.8.0 (TEI XML) → PyPDFLoader (降级)
+- **PDF 解析**: Marker (marker-pdf) → PyPDFLoader (降级)
 - **持久化**: SQLite (AsyncSqliteSaver, LangGraph checkpoint)
 - **LLM**: 双模型 — fast (qwen3-max) + smart (deepseek-r1)
 - **网络搜索**: Tavily Search API
@@ -144,7 +141,7 @@ BM25(30条) + Dense(30条) → RRF融合 → qwen3-rerank精排 → Section Boos
 - markdown-it + KaTeX
 
 ### DevOps
-- Docker Compose (4 服务: frontend + backend + ES + GROBID)
+- Docker Compose (3 服务: frontend + backend + ES)
 - ES 连接池 (模块级单例复用)
 
 ---
@@ -172,7 +169,7 @@ docker compose up -d --build
 cd backend
 python -m venv venv && source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-# 确保 ES 和 GROBID 已启动 (docker compose up -d elasticsearch grobid)
+# 确保 ES 已启动 (docker compose up -d elasticsearch)
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 # 前端
@@ -191,10 +188,10 @@ ScholarMind/
 │   ├── app/
 │   │   ├── api/          # FastAPI 路由 + SSE 流式 + trace 集成
 │   │   ├── graph/        # LangGraph 核心
-│   │   │   ├── nodes/    # 7 个 Agent 节点
+│   │   │   ├── nodes/    # 6 个 LLM 节点 + memory 后处理（非独立 Agent）
 │   │   │   ├── state.py  # AgentState 定义
 │   │   │   └── graph.py  # 图拓扑 + 条件路由
-│   │   ├── rag/          # 检索引擎 (ES 混合检索 + GROBID + Chunking)
+│   │   ├── rag/          # 检索引擎 (ES 混合检索 + Marker + Chunking)
 │   │   ├── tools/        # 外部工具 (Tavily)
 │   │   ├── trace/        # 对话追溯 (collector + storage)
 │   │   └── utils/        # LLM 工厂

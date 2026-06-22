@@ -1,11 +1,75 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from app.graph.nodes.refiner import build_refine_prompt, refine_node
+from app.graph.nodes.refiner import build_edit_prompt, build_augment_prompt, refine_node
 
 
 class RefinerEvidencePromptTest(unittest.TestCase):
-    def test_refiner_prompt_includes_supplemental_evidence_when_available(self):
+    # ── build_augment_prompt ────────────────────────────────────────────
+
+    def test_augment_prompt_includes_supplemental_evidence(self):
+        prompt = build_augment_prompt({
+            "query": "Add experiment evidence",
+            "final_report": "Old report",
+            "search_results": ["[source: paper.pdf, section: Experiments]\nAccuracy improves."],
+            "short_memory": {
+                "topic": "SafeDecoding",
+                "report_summary": "Report summary",
+                "change_log": [],
+                "last_intent": "new_topic",
+            },
+        })
+
+        self.assertIn("Supplemental evidence", prompt)
+        self.assertIn("Accuracy improves.", prompt)
+        self.assertIn("source/section citations", prompt)
+        self.assertIn("Old report", prompt)
+
+    def test_augment_prompt_handles_empty_evidence(self):
+        prompt = build_augment_prompt({
+            "query": "Add something",
+            "final_report": "Old report",
+            "search_results": [],
+        })
+
+        self.assertIn("No supplemental evidence was retrieved", prompt)
+        self.assertIn("edit-only", prompt)
+
+    # ── build_edit_prompt ───────────────────────────────────────────────
+
+    def test_edit_prompt_forbids_new_facts(self):
+        prompt = build_edit_prompt({
+            "query": "Make the wording shorter",
+            "final_report": "Old report",
+            "short_memory": None,
+        })
+
+        self.assertIn("text-level edit only", prompt)
+        self.assertIn("Do NOT add new factual claims", prompt)
+        self.assertNotIn("Supplemental evidence", prompt)
+
+    def test_edit_prompt_includes_short_memory_context(self):
+        prompt = build_edit_prompt({
+            "query": "Make the method section shorter",
+            "final_report": "Full report",
+            "short_memory": {
+                "topic": "SafeDecoding",
+                "report_summary": "Report summary",
+                "change_log": ["Added baseline details."],
+                "last_intent": "new_topic",
+            },
+        })
+
+        self.assertIn("Short-term memory", prompt)
+        self.assertIn("Current topic: SafeDecoding", prompt)
+        self.assertIn("Current report summary: Report summary", prompt)
+        self.assertIn("Recent report changes:", prompt)
+        self.assertIn("Original report:", prompt)
+        self.assertIn("Full report", prompt)
+
+    # ── refine_node dispatch ────────────────────────────────────────────
+
+    def test_refiner_dispatches_to_augment_prompt(self):
         llm = Mock()
         structured_llm = Mock()
         structured_llm.invoke.return_value.final_report = "Updated report"
@@ -14,6 +78,7 @@ class RefinerEvidencePromptTest(unittest.TestCase):
         state = {
             "query": "Add experiment evidence",
             "final_report": "Old report",
+            "intent": "augment_report",
             "search_results": ["[source: paper.pdf, section: Experiments]\nAccuracy improves."],
         }
 
@@ -23,11 +88,10 @@ class RefinerEvidencePromptTest(unittest.TestCase):
         prompt = structured_llm.invoke.call_args.args[0][0].content
         self.assertIn("Supplemental evidence", prompt)
         self.assertIn("Accuracy improves.", prompt)
-        self.assertIn("source/section citations", prompt)
         self.assertEqual(result["final_report"], "Updated report")
         self.assertEqual(result["memory_event"], "Added experiment evidence to the current report.")
 
-    def test_refiner_prompt_forbids_new_facts_without_evidence(self):
+    def test_refiner_dispatches_to_edit_prompt_by_default(self):
         llm = Mock()
         structured_llm = Mock()
         structured_llm.invoke.return_value.final_report = "Edited report"
@@ -36,6 +100,7 @@ class RefinerEvidencePromptTest(unittest.TestCase):
         state = {
             "query": "Make the wording shorter",
             "final_report": "Old report",
+            # no intent set → should use edit_prompt
             "search_results": [],
         }
 
@@ -43,30 +108,10 @@ class RefinerEvidencePromptTest(unittest.TestCase):
             refine_node(state)
 
         prompt = structured_llm.invoke.call_args.args[0][0].content
-        self.assertIn("No supplemental evidence was retrieved", prompt)
-        self.assertIn("Do not add new factual claims", prompt)
+        self.assertIn("text-level edit only", prompt)
+        self.assertIn("Do NOT add new factual claims", prompt)
 
-    def test_refiner_prompt_includes_short_memory_context(self):
-        prompt = build_refine_prompt({
-            "query": "Make the method section shorter",
-            "final_report": "Full report",
-            "search_results": [],
-            "short_memory": {
-                "topic": "SafeDecoding",
-                "report_summary": "Report summary",
-                "change_log": ["Added baseline details."],
-                "last_intent": "new_topic",
-            },
-        })
-
-        self.assertIn("Short-term memory:", prompt)
-        self.assertIn("Current topic: SafeDecoding", prompt)
-        self.assertIn("Current report summary: Report summary", prompt)
-        self.assertIn("Recent report changes:", prompt)
-        self.assertIn("Original report:", prompt)
-        self.assertIn("Full report", prompt)
-
-    def test_refiner_uses_structured_change_memory_event(self):
+    def test_refiner_uses_structured_memory_event(self):
         llm = Mock()
         structured_llm = Mock()
         structured_llm.invoke.return_value.final_report = "Shorter revised report"
@@ -75,6 +120,7 @@ class RefinerEvidencePromptTest(unittest.TestCase):
         state = {
             "query": "Make the conclusion shorter",
             "final_report": "Long report",
+            "intent": "edit_report",
             "search_results": [],
             "short_memory": {
                 "topic": "SafeDecoding",
@@ -97,6 +143,7 @@ class RefinerEvidencePromptTest(unittest.TestCase):
         state = {
             "query": "Make the conclusion shorter",
             "final_report": "Long report",
+            "intent": "edit_report",
             "search_results": [],
         }
 

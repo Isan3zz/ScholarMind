@@ -40,7 +40,8 @@ def _build_parent_documents(
         else:
             # 无子节：当前块 + 前后各一个同节无子节的邻居
             child = group[0]
-            gi = child.metadata["global_chunk_index"] - 1  # 转为 0-based
+            # 用 children 中的实际索引，而非 global_chunk_index（后者会跳过 References 导致越界）
+            gi = indices[0]  # 当前 child 在 children 列表中的位置
             section = rep["section"]
 
             neighbor_indices = [gi]

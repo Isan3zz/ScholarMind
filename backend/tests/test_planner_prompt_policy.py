@@ -9,6 +9,8 @@ class PlannerPromptPolicyTest(unittest.TestCase):
             query="What is the method innovation in this paper?",
             critique="Missing experimental comparison evidence",
             short_memory_context="No short-term memory available.",
+            paper_catalog="1. paper.pdf — Test Paper\n   abstract: ...",
+            retrieval_audit="(No previous retrieval rounds — this is the first attempt.)",
         )
 
         self.assertIn("paper vector database", prompt)
@@ -25,6 +27,8 @@ class PlannerPromptPolicyTest(unittest.TestCase):
             query="SafeDecoding compare against which baseline defenses?",
             critique="",
             short_memory_context="No short-term memory available.",
+            paper_catalog="1. paper.pdf — SafeDecoding Paper\n   abstract: ...",
+            retrieval_audit="(No previous retrieval rounds — this is the first attempt.)",
         )
 
         self.assertIn("baseline", prompt.lower())
@@ -43,6 +47,8 @@ class PlannerPromptPolicyTest(unittest.TestCase):
                 "Recent report changes:\n"
                 "- Added baseline details"
             ),
+            paper_catalog="1. paper.pdf — SafeDecoding Paper\n   abstract: ...",
+            retrieval_audit="(No previous retrieval rounds — this is the first attempt.)",
         )
 
         self.assertIn("Short-term memory", prompt)

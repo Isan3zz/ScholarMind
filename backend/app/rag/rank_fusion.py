@@ -27,19 +27,3 @@ def rrf_fusion(
         fused.append(hit)
     return fused
 
-
-def apply_section_boost(
-    hits: list[RetrievalHit],
-    preferred_sections: list[str],
-    boost: float = 0.02,
-) -> list[RetrievalHit]:
-    preferred = set(preferred_sections or [])
-    boosted: list[RetrievalHit] = []
-    for hit in hits:
-        copied = deepcopy(hit)
-        if copied.section in preferred:
-            copied.score += boost
-            copied.metadata = dict(copied.metadata)
-            copied.metadata["section_boosted"] = True
-        boosted.append(copied)
-    return sorted(boosted, key=lambda item: (-item.score, item.identity))

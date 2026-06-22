@@ -4,7 +4,7 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_core.documents import Document
 from langchain_core.tools import tool
 from app.tools.search import search_tavily
-from app.graph.state import AgentState
+from app.graph.state import AgentState, RetrievalAuditEntry
 from app.rag.engine import apply_section_boost, children_only_search, global_parent_enrichment
 from app.utils.llm import get_llm
 
@@ -83,7 +83,7 @@ def _retrieve_local_docs_for_queries(
     plans: list[str],
     plan_sources: list[list[str]] | None = None,
     plan_sections: list[list[str]] | None = None,
-) -> list[Document]:
+) -> tuple[list[Document], list[tuple[str, int]]]:
     # 有多论文路由时跳过原始 query（Planner 已按论文拆分了 query）
     has_routing = any(srcs for srcs in (plan_sources or []))
     retrieval_queries = _build_local_retrieval_queries(query, plans, skip_raw_query=has_routing)
@@ -160,7 +160,62 @@ def _retrieve_local_docs_for_queries(
         meta["retrieval_query"] = "; ".join(sorted(queries)) if queries else "(original)"
         docs.append(Document(page_content=hit.context_text, metadata=meta))
 
-    return docs
+    return docs, retrieval_queries
+
+
+def _build_audit_entry(
+    docs: list[Document],
+    retrieval_queries: list[tuple[str, int]],
+    round_num: int,
+) -> RetrievalAuditEntry:
+    """Build a compact audit record from retrieval results."""
+    # which queries returned hits
+    hit_queries: set[str] = set()
+    all_sources: set[str] = set()
+    all_sections: set[str] = set()
+    max_score: float = 0.0
+
+    for doc in docs:
+        meta = doc.metadata or {}
+        rq = meta.get("retrieval_query", "")
+        if rq:
+            # rq can be "; "-joined from multiple queries
+            for q in rq.split("; "):
+                hit_queries.add(q.strip())
+        src = meta.get("source", "")
+        if src and src != "unknown":
+            all_sources.add(str(src))
+        sec = meta.get("section", "")
+        if sec and sec != "Unknown":
+            all_sections.add(str(sec))
+        score = meta.get("relevance_score", 0.0)
+        if isinstance(score, (int, float)) and score > max_score:
+            max_score = float(score)
+
+    all_query_texts = [q for q, _ in retrieval_queries]
+    empty = [q for q in all_query_texts if q not in hit_queries]
+
+    return {
+        "round": round_num,
+        "queries": all_query_texts,
+        "sources_hit": sorted(all_sources),
+        "sections_hit": sorted(all_sections),
+        "max_relevance": max_score,
+        "empty_queries": empty,
+    }
+
+
+def _with_audit_log(
+    result: dict,
+    state: AgentState,
+    audit_entry: RetrievalAuditEntry | None,
+) -> dict:
+    """Append audit_entry to the existing retrieval_audit_log in state."""
+    existing: list[RetrievalAuditEntry] = list(state.get("retrieval_audit_log") or [])
+    if audit_entry is not None:
+        existing.append(audit_entry)
+    result["retrieval_audit_log"] = existing
+    return result
 
 
 def research_node(state: AgentState):
@@ -176,12 +231,17 @@ def research_node(state: AgentState):
 
     # Step 1: Always search local docs first (code-driven, unchanged)
     local_content = ""
+    round_num = state.get("revision_number", 0)
+    audit_entry: RetrievalAuditEntry | None = None
     try:
-        docs = _retrieve_local_docs_for_queries(query, plans, plan_sources=plan_sources, plan_sections=plan_sections)
+        docs, retrieval_queries = _retrieve_local_docs_for_queries(
+            query, plans, plan_sources=plan_sources, plan_sections=plan_sections
+        )
+        audit_entry = _build_audit_entry(docs, retrieval_queries, round_num)
         if docs:
             local_content = _format_evidence_docs(docs)
             results.append(f"### 📂 本地文档资料\n{local_content}\n")
-            print("--- [Researcher] Local docs found ---")
+            print(f"--- [Researcher] Local docs found | queries={len(retrieval_queries)} hits={len(docs)} max_score={audit_entry['max_relevance']:.2f} ---")
         else:
             print("--- [Researcher] No local docs found ---")
     except Exception as e:
@@ -248,11 +308,11 @@ Local document search results:
     # Step 5: Circuit breaker for document-only mode
     if mode == "document" and "INSUFFICIENT_EVIDENCE" in (final or ""):
         print("--- [Researcher] Document-only: docs irrelevant, aborting ---")
-        return {
-            "search_results": results + [final],
-            "should_stop": True,
-        }
+        return _with_audit_log(
+            {"search_results": results + [final], "should_stop": True},
+            state, audit_entry,
+        )
 
     results.append(final)
     print(f"--- [Researcher] Done | result_blocks={len(results)} ---")
-    return {"search_results": results}
+    return _with_audit_log({"search_results": results}, state, audit_entry)

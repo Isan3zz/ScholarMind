@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 
 from app.graph.nodes.memory import format_short_memory_for_prompt
-from app.graph.state import AgentState
+from app.graph.state import AgentState, RetrievalAuditEntry
 from app.rag.engine import get_available_papers
 from app.utils.llm import get_llm
 
@@ -44,6 +44,9 @@ Existing reviewer critique, if any:
 Short-term memory:
 {short_memory_context}
 
+Retrieval audit log (what previous rounds searched and found — use this to avoid dead ends):
+{retrieval_audit}
+
 Rules:
 1. Output queries that can find evidence in academic papers, not generic web search phrases.
 2. Preserve proper nouns, model names, dataset names, acronyms, paper titles, and technical terms from the user question.
@@ -53,6 +56,9 @@ Rules:
 6. If the user asks about innovation or contributions, cover Introduction, Contribution, Method.
 7. If the user asks about limitations or future work, cover Limitation, Discussion, Future Work.
 8. If reviewer critique mentions missing evidence, generate follow-up queries for that missing information.
+8a. DO NOT repeat queries that returned empty results in a previous round (check the audit log's empty_queries). Instead, try different angles or different section targets.
+8b. If a previous round's query hit sources/sections but with low relevance, shift sections rather than rephrasing the same query.
+8c. If the audit log shows a section was already hit, consider whether a different section of the same paper could fill the gap.
 9. FIRST determine whether this is a single-paper or multi-paper question:
    - SINGLE-PAPER: the user asks about one specific paper. ALL queries should target that paper only. Generate focused queries that drill into different sections of THE SAME paper (e.g., its method detail, experimental setup, limitations). Every query's sources = [that_one_paper.pdf].
    - MULTI-PAPER: the user asks about 2+ papers (comparison, contrast, relationships). Split queries by paper: query1 targets paperA's method, query2 targets paperB's method, query3 targets shared concepts. Each query's sources = [one paper] when drilling into that paper, or [paperA, paperB] when directly comparing. Do NOT put both papers in every source list — per-paper queries produce better retrieval.
@@ -85,10 +91,41 @@ def _build_paper_catalog() -> str:
         title = p.get("title", source)
         abstract = p.get("abstract", "")
         abstract_short = abstract[:300] + ("..." if len(abstract) > 300 else "")
+        sections = p.get("sections", [])
         lines.append(f"{i}. source: {source}")
         lines.append(f"   title: {title}")
         if abstract_short:
             lines.append(f"   abstract: {abstract_short}")
+        if sections:
+            lines.append(f"   sections: {', '.join(sections[:20])}")
+    return "\n".join(lines)
+
+
+def _format_audit_log_for_prompt(audit_log: list[RetrievalAuditEntry] | None) -> str:
+    """Format the retrieval audit log as a compact prompt section."""
+    if not audit_log:
+        return "(No previous retrieval rounds — this is the first attempt.)"
+
+    lines: list[str] = []
+    for entry in audit_log:
+        round_num = entry.get("round", 0)
+        queries = entry.get("queries", [])
+        sources_hit = entry.get("sources_hit", [])
+        sections_hit = entry.get("sections_hit", [])
+        max_score = entry.get("max_relevance", 0.0)
+        empty = entry.get("empty_queries", [])
+
+        lines.append(f"Round {round_num}:")
+        lines.append(f"  Queries tried: {', '.join(queries) if queries else '(none)'}")
+        if sources_hit:
+            lines.append(f"  Papers hit: {', '.join(sources_hit)}")
+        if sections_hit:
+            lines.append(f"  Sections hit: {', '.join(sections_hit)}")
+        lines.append(f"  Max relevance score: {max_score:.2f}")
+        if empty:
+            lines.append(f"  ⚠️ EMPTY (no results): {', '.join(empty)}")
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -98,6 +135,7 @@ def plan_node(state: AgentState):
     critique = state.get("critique", "")
     memory_context = format_short_memory_for_prompt(state.get("short_memory"))
     paper_catalog = _build_paper_catalog()
+    audit_text = _format_audit_log_for_prompt(state.get("retrieval_audit_log"))
 
     llm_structured = llm.with_structured_output(PlanResult)
     result = llm_structured.invoke(
@@ -106,6 +144,7 @@ def plan_node(state: AgentState):
             critique=critique,
             short_memory_context=memory_context,
             paper_catalog=paper_catalog,
+            retrieval_audit=audit_text,
         )
     )
 

@@ -40,19 +40,40 @@ Writing rules:
 )
 
 
+def _format_reviewer_gaps_for_writer(gaps: list[dict] | None) -> str:
+    """Convert structured gaps into a Writer-actionable checklist."""
+    if not gaps:
+        return ""
+    lines = ["## Missing information to address in this revision:"]
+    for i, gap in enumerate(gaps, 1):
+        aspect = gap.get("missing_aspect", "")
+        priority = gap.get("priority", "supplementary")
+        sections = gap.get("target_sections", [])
+        label = "🔴 MUST FIX" if priority == "critical" else "🟡 NICE TO HAVE"
+        lines.append(f"\n{i}. [{label}] {aspect}")
+        if sections:
+            lines.append(f"   Evidence likely in: {', '.join(sections)}")
+    return "\n".join(lines)
+
+
 def write_node(state: AgentState):
     print("--- [Node] Writing report ---")
     query = state["query"]
     content = "\n\n".join(state["search_results"])
 
     critique = state.get("critique", "")
+    gaps = state.get("reviewer_gaps")
+    gaps_text = _format_reviewer_gaps_for_writer(gaps)
+
     critique_section = ""
-    if critique:
-        critique_section = f"""
-        Important: the previous report did not pass review.
-        Reviewer feedback: {critique}
-        Please fix the issue in this version.
-        """
+    if critique or gaps_text:
+        parts = []
+        if critique:
+            parts.append(f"Important: the previous report did not pass review.\nReviewer feedback: {critique}")
+        if gaps_text:
+            parts.append(gaps_text)
+        parts.append("Please fix the issues listed above in this version.")
+        critique_section = "\n\n".join(parts)
 
     prompt = WRITE_PROMPT.format(
         query=query,

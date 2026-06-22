@@ -3,33 +3,6 @@ from dataclasses import dataclass
 from app.rag.hits import RetrievalHit
 
 
-def infer_paper_intent(query: str) -> str:
-    q = (query or "").lower()
-    if any(x in q for x in ["方法", "模型", "架构", "method", "approach", "architecture"]):
-        return "method"
-    if any(x in q for x in ["实验", "结果", "指标", "数据集", "experiment", "result", "dataset", "metric"]):
-        return "experiments"
-    if any(x in q for x in ["相关工作", "已有工作", "related work", "prior work"]):
-        return "related_work"
-    if any(x in q for x in ["局限", "不足", "limitation", "future work"]):
-        return "limitations"
-    if any(x in q for x in ["总结", "贡献", "summary", "contribution"]):
-        return "summary"
-    return "general"
-
-
-def sections_for_intent(intent: str) -> list[str]:
-    mapping = {
-        "method": ["Method", "Background"],
-        "experiments": ["Experiments", "Results", "Discussion"],
-        "related_work": ["Related Work", "Introduction"],
-        "limitations": ["Limitations", "Discussion", "Conclusion"],
-        "summary": ["Abstract", "Introduction", "Conclusion"],
-        "general": [],
-    }
-    return mapping.get(intent, [])
-
-
 @dataclass
 class EvidenceDecision:
     status: str

@@ -17,12 +17,6 @@ services:
     ports:
       - "9200:9200"
 
-  grobid:
-    image: lfoppiano/grobid:0.8.0
-    container_name: scholarmind-grobid
-    ports:
-      - "8070:8070"
-
   backend:
     build:
       context: ./backend
@@ -31,21 +25,18 @@ services:
       - ./backend/.env
     environment:
       ES_URL: http://elasticsearch:9200
-      GROBID_URL: http://grobid:8070
     ports:
-      - "8000:8000"
+      - "8002:8000"
     depends_on:
       elasticsearch:
         condition: service_healthy
-      grobid:
-        condition: service_started
 
   frontend:
     build:
       context: ./frontend
     container_name: scholarmind-frontend
     ports:
-      - "5173:80"
+      - "5175:80"
     depends_on:
       - backend
 

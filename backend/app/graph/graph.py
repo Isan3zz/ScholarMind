@@ -1,11 +1,6 @@
 from langgraph.graph import END, StateGraph
 
-from app.graph.nodes.memory import update_short_memory
 from app.graph.state import AgentState
-
-
-def memory_node(state: AgentState):
-    return update_short_memory(state)
 
 
 def planner_node(state: AgentState):
@@ -68,30 +63,73 @@ def route_after_research(state: AgentState):
 
 
 def route_after_refiner(state: AgentState):
-    """Route refiner output: augment intent needs reviewer, others skip to memory."""
+    """Route refiner output: augment intent needs reviewer, others done."""
     if state.get("intent") == "augment_report":
         print("--- [route] augment_report -> reviewer ---")
         return "reviewer"
-    print("--- [route] style edit -> memory ---")
-    return "memory"
+    print("--- [route] style edit -> END ---")
+    return END
 
 
 def should_continue(state: AgentState):
-    """Route reviewer output to retry, finish, or update short memory."""
-    current_revision = state.get("revision_number", 0)
-    if current_revision >= 3:
-        print("--- [route] max revision reached -> ending task ---")
-        return END
+    """Route reviewer output to retry or finish.
 
+    Exit conditions (any one triggers END):
+    1. Reviewer passed → done.
+    2. Hard cap: 5 rounds (safety net, should rarely fire).
+    3. Info-gain stall: last two audit rounds show no improvement in max_relevance,
+       no new sources hit, and empty_queries didn't shrink → further rounds unlikely to help.
+    4. All audit queries returned empty → knowledge base has nothing on this topic.
+    """
     review_status = state.get("review_status", "PASS")
     critique = state.get("critique", "")
+    current_revision = state.get("revision_number", 0)
 
-    if review_status == "FAIL":
-        print(f"--- [route] review failed ({critique}) -> planner ---")
-        return "planner"
+    if review_status != "FAIL":
+        print("--- [route] review passed -> END ---")
+        return END
 
-    print("--- [route] review passed -> memory ---")
-    return "memory"
+    # Hard safety cap — 5 rounds
+    if current_revision >= 5:
+        print("--- [route] max revision (5) reached -> ending task ---")
+        return END
+
+    # Info-gain analysis from audit log
+    audit_log: list = list(state.get("retrieval_audit_log") or [])
+    if len(audit_log) >= 2:
+        prev = audit_log[-2]
+        curr = audit_log[-1]
+
+        prev_max = float(prev.get("max_relevance", 0.0))
+        curr_max = float(curr.get("max_relevance", 0.0))
+        prev_empty = len(prev.get("empty_queries", []))
+        curr_empty = len(curr.get("empty_queries", []))
+        prev_sources = set(prev.get("sources_hit", []))
+        curr_sources = set(curr.get("sources_hit", []))
+
+        new_sources = curr_sources - prev_sources
+        score_improved = curr_max > prev_max + 0.01
+        empty_shrank = curr_empty < prev_empty
+
+        if not score_improved and not new_sources and not empty_shrank:
+            print(
+                f"--- [route] info-gain stall: "
+                f"score {prev_max:.2f}→{curr_max:.2f}, "
+                f"new_sources={len(new_sources)}, "
+                f"empty {prev_empty}→{curr_empty} "
+                f"-> ending task ---"
+            )
+            return END
+
+    # If the latest round had ALL queries empty → nothing retrievable
+    if audit_log:
+        last = audit_log[-1]
+        if last.get("queries") and len(last.get("empty_queries", [])) == len(last.get("queries", [])):
+            print("--- [route] all queries empty in last round -> ending task ---")
+            return END
+
+    print(f"--- [route] review failed (round {current_revision}) -> planner ---")
+    return "planner"
 
 
 def create_graph(memory=None):
@@ -103,7 +141,6 @@ def create_graph(memory=None):
     workflow.add_node("writer", writer_node)
     workflow.add_node("reviewer", reviewer_node)
     workflow.add_node("refiner", refiner_node)
-    workflow.add_node("memory", memory_node)
 
     workflow.set_entry_point("router")
     workflow.add_conditional_edges(
@@ -131,7 +168,6 @@ def create_graph(memory=None):
         should_continue,
         {
             "planner": "planner",
-            "memory": "memory",
             END: END,
         },
     )
@@ -140,10 +176,9 @@ def create_graph(memory=None):
         route_after_refiner,
         {
             "reviewer": "reviewer",
-            "memory": "memory",
+            END: END,
         },
     )
-    workflow.add_edge("memory", END)
 
     app = workflow.compile(checkpointer=memory)
     return app
