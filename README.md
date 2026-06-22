@@ -47,7 +47,7 @@ BM25(30条) + Dense(30条) → RRF融合 → qwen3-rerank精排 → Section Boos
 
 - **子块索引 + 父块返回**: 检索打在段落级（精准），LLM 看到段落+邻居（完整上下文）
 - **Section Boost**: 根据问题类型（方法/实验/相关工作）给目标章节的 chunk 加分
-- **Marker**: 高精度 PDF 解析（布局检测 + OCR + 章节层级），失败回退 PyPDFLoader + regex
+- **MinerU Cloud API**: 高精度 PDF 解析（布局检测 + OCR + 章节层级），云端提交+轮询，失败回退 PyPDFLoader
 
 ### 🛡️ 防幻觉机制
 
@@ -130,7 +130,7 @@ BM25(30条) + Dense(30条) → RRF融合 → qwen3-rerank精排 → Section Boos
 - **检索引擎**: Elasticsearch (BM25 + 向量混合, RRF 融合)
 - **重排序**: qwen3-rerank (DashScope OpenAI 兼容接口)
 - **Embedding**: DashScope text-embedding-v4 / HuggingFace (可切换)
-- **PDF 解析**: Marker (marker-pdf) → PyPDFLoader (降级)
+- **PDF 解析**: MinerU Cloud API → PyPDFLoader (降级)；本地可选 Marker (marker-pdf)
 - **持久化**: SQLite (AsyncSqliteSaver, LangGraph checkpoint)
 - **LLM**: 双模型 — fast (qwen3-max) + smart (deepseek-r1)
 - **网络搜索**: Tavily Search API
@@ -191,7 +191,7 @@ ScholarMind/
 │   │   │   ├── nodes/    # 6 个 LLM 节点 + memory 后处理（非独立 Agent）
 │   │   │   ├── state.py  # AgentState 定义
 │   │   │   └── graph.py  # 图拓扑 + 条件路由
-│   │   ├── rag/          # 检索引擎 (ES 混合检索 + Marker + Chunking)
+│   │   ├── rag/          # 检索引擎 (ES 混合检索 + MinerU/Marker 解析 + Chunking)
 │   │   ├── tools/        # 外部工具 (Tavily)
 │   │   ├── trace/        # 对话追溯 (collector + storage)
 │   │   └── utils/        # LLM 工厂
